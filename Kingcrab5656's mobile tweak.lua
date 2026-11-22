@@ -668,6 +668,7 @@ local function createMenuSlider(yPos, titleText, minVal, maxVal, initialVal, acc
 	end
 
 	trackConn(hitArea.InputBegan:Connect(function(input)
+		if input.UserInputState ~= Enum.UserInputState.Begin then return end
 		if input.UserInputType == Enum.UserInputType.Touch or input.UserInputType == Enum.UserInputType.MouseButton1 then
 			activeDragInput = input
 			updateFromScreenX(input.Position.X)
@@ -902,6 +903,30 @@ end
 local isShiftLockActive = false
 local isShiftLockBound = false
 
+local function isCharacterRagdolled(char, hum, root)
+	if hum.PlatformStand then
+		return true
+	end
+
+	local state = hum:GetState()
+	if state == Enum.HumanoidStateType.Physics
+		or state == Enum.HumanoidStateType.Ragdoll
+		or state == Enum.HumanoidStateType.FallingDown
+		or state == Enum.HumanoidStateType.Dead
+	then
+		return true
+	end
+
+	-- Catch custom ragdolls that disable R15 Root or R6 RootJoint Motor6D without changing HumanoidState
+	local lowerTorso = char:FindFirstChild("LowerTorso")
+	local rootJoint = (lowerTorso and lowerTorso:FindFirstChild("Root")) or root:FindFirstChild("RootJoint")
+	if rootJoint and rootJoint:IsA("Motor6D") and not rootJoint.Enabled then
+		return true
+	end
+
+	return false
+end
+
 local function updateShiftLockStep()
 	if isUnloaded or not isShiftLockActive or not isShiftLockMasterEnabled then return end
 	local char = player.Character
@@ -911,8 +936,18 @@ local function updateShiftLockStep()
 		local hum = char:FindFirstChildOfClass("Humanoid")
 		if root and hum and hum.Health > 0 then
 			local isSeated = hum.SeatPart ~= nil or hum:GetState() == Enum.HumanoidStateType.Seated
-			
-			if not isSeated then
+			local isRagdolled = isCharacterRagdolled(char, hum, root)
+
+			if isSeated then
+				hum.AutoRotate = true
+			elseif isRagdolled then
+				-- Let physics handle the ragdolled body without forcing root.CFrame upright
+				hum.AutoRotate = true
+				local isFirstPerson = (camera.CFrame.Position - camera.Focus.Position).Magnitude < 1.0
+				if not isFirstPerson then
+					camera.CFrame = camera.CFrame * CFrame.new(CAMERA_OFFSET_RIGHT, 0, 0)
+				end
+			else
 				hum.AutoRotate = false
 				local lookVector = camera.CFrame.LookVector
 				local flatLook = Vector3.new(lookVector.X, 0, lookVector.Z)
@@ -924,8 +959,6 @@ local function updateShiftLockStep()
 				if not isFirstPerson then
 					camera.CFrame = camera.CFrame * CFrame.new(CAMERA_OFFSET_RIGHT, 0, 0)
 				end
-			else
-				hum.AutoRotate = true
 			end
 		elseif hum then
 			hum.AutoRotate = true
@@ -1194,6 +1227,9 @@ local function relayJumpInputToRealButton(pressed)
 end
 
 setJumpPressedState = function(pressed)
+	if not pressed then
+		activeJumpInput = nil
+	end
 	if isJumpHeld == pressed then return end
 	isJumpHeld = pressed
 
@@ -1216,12 +1252,23 @@ setJumpPressedState = function(pressed)
 	end
 end
 
+-- Only trigger on direct press/tap start (Begin), ignoring fingers/cursors sliding or hovering over the button
 trackConn(fakeJumpButton.InputBegan:Connect(function(input)
 	if isUsingNativeJump then return end
+	if input.UserInputState ~= Enum.UserInputState.Begin then return end
 	if input.UserInputType == Enum.UserInputType.Touch or input.UserInputType == Enum.UserInputType.MouseButton1 then
 		if activeJumpInput == nil then
 			activeJumpInput = input
 			setJumpPressedState(true)
+		end
+	end
+end))
+
+trackConn(UserInputService.InputChanged:Connect(function(input)
+	if input == activeJumpInput then
+		if input.UserInputState == Enum.UserInputState.End or input.UserInputState == Enum.UserInputState.Cancel then
+			activeJumpInput = nil
+			setJumpPressedState(false)
 		end
 	end
 end))
@@ -1457,7 +1504,7 @@ local function applyClassicMoveLayout(frame)
 
 	activeMoveConnections[frame] = {
 		frame.InputBegan:Connect(function(input)
-			if input.UserInputType == Enum.UserInputType.Touch and not thumbstickTouch then
+			if input.UserInputState == Enum.UserInputState.Begin and input.UserInputType == Enum.UserInputType.Touch and not thumbstickTouch then
 				isDraggingThumbstick = true
 				thumbstickTouch = input
 			end
